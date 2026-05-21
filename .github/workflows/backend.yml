@@ -11,15 +11,18 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # Paso 1: Descargar el código del repositorio
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # Paso 2: Autenticarse en DockerHub
       - name: Log in to DockerHub
         uses: docker/login-action@v3
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
 
+      # Paso 3: Construir imágenes Docker
       - name: Build Docker images
         run: |
           set -e
@@ -28,7 +31,8 @@ jobs:
           docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/back-despachos_springboot:latest ./back-despachos_springboot
           docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/tienda_despachos:latest ./BD/BD-Despachos
           docker build -t ${{ secrets.DOCKERHUB_USERNAME }}/tienda_ventas:latest ./BD/BD-Ventas
-          
+
+      # Paso 4: Subir imágenes a DockerHub
       - name: Push Docker images
         run: |
           set -e
@@ -37,7 +41,8 @@ jobs:
           docker push ${{ secrets.DOCKERHUB_USERNAME }}/back-despachos_springboot:latest
           docker push ${{ secrets.DOCKERHUB_USERNAME }}/tienda_despachos:latest
           docker push ${{ secrets.DOCKERHUB_USERNAME }}/tienda_ventas:latest
-          
+
+      # Paso 5: Configurar credenciales AWS
       - name: Set up AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -46,6 +51,7 @@ jobs:
           aws-region: us-east-1
           aws-session-token: ${{ secrets.AWS_SESSION_TOKEN }}
 
+      # Paso 6: Agregar llave SSH
       - name: Add SSH Key
         run: |
           set -e
@@ -54,6 +60,7 @@ jobs:
           echo "${{ secrets.EC2_SSH_KEY }}" > ~/.ssh/id_rsa
           chmod 600 ~/.ssh/id_rsa
 
+      # Paso 7: Crear carpeta de despliegue en EC2
       - name: Create deployment folder in EC2
         run: |
           set -e
@@ -64,6 +71,7 @@ jobs:
             ${{ secrets.USER_SERVER }}@${{ secrets.EC2_HOST_BACKEND }} \
             "mkdir -p ~/backend-Devops"
 
+      # Paso 8: Copiar docker-compose.yml a EC2
       - name: Copy docker-compose to EC2
         run: |
           set -e
@@ -71,9 +79,10 @@ jobs:
           scp -i ~/.ssh/id_rsa \
             -o StrictHostKeyChecking=no \
             -o UserKnownHostsFile=/dev/null \
-            docker-compose.prod.yml \
-            ${{ secrets.USER_SERVER }}@${{ secrets.EC2_HOST_BACKEND }}:~/tienda-videojuegos-backend/docker-compose.yml
+            docker-compose.yml \
+            ${{ secrets.USER_SERVER }}@${{ secrets.EC2_HOST_BACKEND }}:~/backend-Devops/docker-compose.yml
 
+      # Paso 9: Desplegar stack en EC2
       - name: Deploy stack in EC2
         run: |
           set -e
@@ -85,45 +94,49 @@ jobs:
 
             set -e
 
-            cd ~/backend_Devops
+            cd ~/backend-Devops
 
-            echo "Validando docker..."
+            echo "Validando Docker..."
             docker --version
 
-            echo "Validando docker-compose..."
-            if ! command -v docker-compose >/dev/null 2>&1; then
-              echo "ERROR: docker-compose no está instalado en la EC2"
+            echo "Validando Docker Compose..."
+            if docker compose version >/dev/null 2>&1; then
+              COMPOSE_CMD="docker compose"
+            elif command -v docker-compose >/dev/null 2>&1; then
+              COMPOSE_CMD="docker-compose"
+            else
+              echo "ERROR: Docker Compose no está instalado en la EC2"
               exit 1
             fi
 
-            docker-compose --version
+            \$COMPOSE_CMD version
 
             echo "Creando archivo .env..."
             echo "DOCKERHUB_USERNAME=${{ secrets.DOCKERHUB_USERNAME }}" > .env
 
-            echo "Autenticando en Docker Hub..."
+            echo "Autenticando en DockerHub..."
             echo "${{ secrets.DOCKERHUB_TOKEN }}" | docker login -u "${{ secrets.DOCKERHUB_USERNAME }}" --password-stdin
 
-            echo "Descargando imágenes desde Docker Hub..."
-            docker-compose pull
+            echo "Descargando imágenes desde DockerHub..."
+            \$COMPOSE_CMD pull
 
             echo "Deteniendo stack anterior..."
-            docker-compose down
+            \$COMPOSE_CMD down
 
             echo "Levantando stack actualizado..."
-            docker-compose up -d
+            \$COMPOSE_CMD up -d
 
             echo "Esperando inicio de servicios..."
             sleep 30
 
             echo "Estado de contenedores:"
-            docker-compose ps
+            \$COMPOSE_CMD ps
 
             echo "Validando contenedores activos..."
             docker ps --format '{{.Names}}' | grep -q "back-despachos_springboot" || { echo "ERROR: back-despachos_springboot no está activo"; exit 1; }
             docker ps --format '{{.Names}}' | grep -q "back-ventas_springboot" || { echo "ERROR: back-ventas_springboot no está activo"; exit 1; }
             docker ps --format '{{.Names}}' | grep -q "backend_ventas" || { echo "ERROR: backend_ventas no está activo"; exit 1; }
-            docker ps --format '{{.Names}}' | grep -q "backend_despachos" || { echo "ERROR: backennd_despachos no está activo"; exit 1; }
+            docker ps --format '{{.Names}}' | grep -q "backend_despachos" || { echo "ERROR: backend_despachos no está activo"; exit 1; }
 
             echo "Validando endpoints internos..."
             if ! command -v curl >/dev/null 2>&1; then
@@ -137,7 +150,7 @@ jobs:
             echo "Validando conexión a base de datos de ventas..."
             docker exec backend_ventas mysql -u root -padmin123 backend_ventas -e "SHOW TABLES;"
 
-            echo "Validando conexión a base de datos de inventario..."
+            echo "Validando conexión a base de datos de despachos..."
             docker exec backend_despachos mysql -u root -padmin123 backend_despachos -e "SHOW TABLES;"
 
             echo "Limpiando imágenes no utilizadas..."
